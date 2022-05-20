@@ -404,10 +404,7 @@ sleep INF
 				numaNode, err = findNUMAForCPUs(dpdkWorkloadPod, cpuList)
 				Expect(err).ToNot(HaveOccurred())
 
-				buff, err = pods.ExecCommand(client.Client, *dpdkWorkloadPod, []string{"cat",
-					fmt.Sprintf("/sys/devices/system/node/node%d/hugepages/hugepages-1048576kB/free_hugepages", numaNode)})
-				Expect(err).ToNot(HaveOccurred())
-				activeNumberOfFreeHugePages, err = strconv.Atoi(strings.Replace(buff.String(), "\r\n", "", 1))
+				activeNumberOfFreeHugePages, err = getFreeHugepages(*dpdkWorkloadPod, numaNode)
 				Expect(err).ToNot(HaveOccurred())
 			})
 
@@ -427,10 +424,7 @@ sleep INF
 				Expect(err).ToNot(HaveOccurred())
 
 				Eventually(func() int {
-					buff, err := pods.ExecCommand(client.Client, *dpdkWorkloadPod, []string{"cat",
-						fmt.Sprintf("/sys/devices/system/node/node%d/hugepages/hugepages-1048576kB/free_hugepages", numaNode)})
-					Expect(err).ToNot(HaveOccurred())
-					numberOfFreeHugePages, err := strconv.Atoi(strings.Replace(buff.String(), "\r\n", "", 1))
+					numberOfFreeHugePages, err := getFreeHugepages(*dpdkWorkloadPod, numaNode)
 					Expect(err).ToNot(HaveOccurred())
 					return numberOfFreeHugePages
 				}, 5*time.Minute, 5*time.Second).Should(Equal(activeNumberOfFreeHugePages - 1))
@@ -1569,4 +1563,14 @@ func getDeviceRXBytes(pod *corev1.Pod, device string) (int, error) {
 		}
 	}
 	return -1, fmt.Errorf("could not find RX stats: %v", statsLines)
+}
+
+// Retrieve the number of free hugepages in the pod
+func getFreeHugepages(pod corev1.Pod, numaNode int) (int, error) {
+	buff, err := pods.ExecCommand(client.Client, pod, []string{"cat",
+		fmt.Sprintf("/sys/devices/system/node/node%d/hugepages/hugepages-1048576kB/free_hugepages", numaNode)})
+	if err != nil {
+		return 0, err
+	}
+	return strconv.Atoi(strings.Replace(buff.String(), "\r\n", "", 1))
 }

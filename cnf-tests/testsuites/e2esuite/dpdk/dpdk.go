@@ -81,6 +81,10 @@ var (
 	sriovNicsTable []TableEntry
 
 	workerCnfLabelSelector string
+
+	// Size of hugepages to use as a resource quantity value
+	// For x86 this must be either "2Mi" or "1Gi"
+	hugePageSize = resource.MustParse("1Gi")
 )
 
 func init() {
@@ -619,8 +623,10 @@ sleep INF
 			Expect(containerPci).To(ContainSubstring(podPci))
 
 			By("Huge pages is present in container downward volume")
-			containerHPrequest, err := checkDownwardApi(dpdkWorkloadPod, "hugepages_1G_request_dpdk", "hugepages_request")
-			containerHPlimit, err := checkDownwardApi(dpdkWorkloadPod, "hugepages_1G_limit_dpdk", "hugepages_limit")
+			reqName := fmt.Sprintf("hugepages_%s_request_dpdk", shortHugePageSize())
+			limitName := fmt.Sprintf("hugepages_%s_limit_dpdk", shortHugePageSize())
+			containerHPrequest, err := checkDownwardApi(dpdkWorkloadPod, reqName, "hugepages_request")
+			containerHPlimit, err := checkDownwardApi(dpdkWorkloadPod, limitName, "hugepages_limit")
 			podHp := getHugePages(dpdkWorkloadPod)
 			Expect(containerHPrequest).To(ContainSubstring(podHp))
 			Expect(containerHPlimit).To(ContainSubstring(podHp))
@@ -844,7 +850,7 @@ func validatePerformanceProfile(performanceProfile *performancev2.PerformancePro
 		return false, nil
 	}
 
-	found1GHugePages := false
+	foundHugePages := false
 	for _, page := range performanceProfile.Spec.HugePages.Pages {
 		countVerification := 5
 		// we need a minimum of 5 huge pages so if there is no Node in the performance profile we need 10 pages
@@ -853,7 +859,7 @@ func validatePerformanceProfile(performanceProfile *performancev2.PerformancePro
 			countVerification = countVerification * 2
 		}
 
-		if page.Size != "1G" {
+		if page.Size != performancev2.HugePageSize(shortHugePageSize()) {
 			continue
 		}
 
@@ -861,11 +867,11 @@ func validatePerformanceProfile(performanceProfile *performancev2.PerformancePro
 			continue
 		}
 
-		found1GHugePages = true
+		foundHugePages = true
 		break
 	}
 
-	return found1GHugePages, nil
+	return foundHugePages, nil
 }
 
 func CleanPerformanceProfiles() error {
@@ -916,7 +922,7 @@ func WaitForClusterToBeStable() error {
 func CreatePerformanceProfile() error {
 	isolatedCPUSet := performancev2.CPUSet("8-15")
 	reservedCPUSet := performancev2.CPUSet("0-7")
-	hugepageSize := performancev2.HugePageSize("1G")
+	hugepageSize := performancev2.HugePageSize(shortHugePageSize())
 	performanceProfile := &performancev2.PerformanceProfile{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: performanceProfileName,
@@ -1111,9 +1117,9 @@ sleep INF
 
 func createDPDKWorkload(nodeSelector map[string]string, command string, isServer bool, additionalCapabilities []corev1.Capability, mac string) (*corev1.Pod, error) {
 	resources := map[corev1.ResourceName]resource.Quantity{
-		corev1.ResourceName("hugepages-1Gi"): resource.MustParse("2Gi"),
-		corev1.ResourceMemory:                resource.MustParse("1Gi"),
-		corev1.ResourceCPU:                   resource.MustParse("4"),
+		corev1.ResourceName(fmt.Sprintf("hugepages-%v", hugePageSize)): resource.MustParse("2Gi"),
+		corev1.ResourceMemory: resource.MustParse("1Gi"),
+		corev1.ResourceCPU:    resource.MustParse("4"),
 	}
 
 	// Enable NET_RAW is required by mellanox nics as they are using the netdevice driver
@@ -1486,7 +1492,7 @@ func getHugePages(pod *corev1.Pod) string {
 	podHp := pod.Spec.Containers
 	s := fmt.Sprintln(podHp)
 	for _, line := range strings.Split(s, " ") {
-		if strings.Contains(line, "hugepages-1Gi:") {
+		if strings.Contains(line, fmt.Sprintf("hugepages-%v:", hugePageSize)) {
 			r := regexp.MustCompile(`\d{2,}|[7-9]`)
 			b := r.FindAllString(line, -1)
 			num := path.Join(b...)
@@ -1567,10 +1573,21 @@ func getDeviceRXBytes(pod *corev1.Pod, device string) (int, error) {
 
 // Retrieve the number of free hugepages in the pod
 func getFreeHugepages(pod corev1.Pod, numaNode int) (int, error) {
+	hugePageBytes, ok := hugePageSize.AsInt64()
+	if !ok || (hugePageBytes&(1024-1)) != 0 {
+		return 0, fmt.Errorf("Bad hugepage size \"%v\"", hugePageSize)
+	}
 	buff, err := pods.ExecCommand(client.Client, pod, []string{"cat",
-		fmt.Sprintf("/sys/devices/system/node/node%d/hugepages/hugepages-1048576kB/free_hugepages", numaNode)})
+		fmt.Sprintf("/sys/devices/system/node/node%d/hugepages/hugepages-%dkB/free_hugepages", numaNode, hugePageBytes/1024)})
 	if err != nil {
 		return 0, err
 	}
 	return strconv.Atoi(strings.Replace(buff.String(), "\r\n", "", 1))
+}
+
+// Both the downward API and performance profile use "1G" for 1
+// gibibyte hugepage size, rather than the normal "1Gi" used for k8s
+// resources.  Calculate that shortened form
+func shortHugePageSize() string {
+	return strings.TrimSuffix(hugePageSize.String(), "i")
 }

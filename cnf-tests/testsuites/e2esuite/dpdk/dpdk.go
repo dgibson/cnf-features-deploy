@@ -85,6 +85,9 @@ var (
 	// Size of hugepages to use as a resource quantity value
 	// For x86 this must be either "2Mi" or "1Gi"
 	hugePageSize = resource.MustParse("1Gi")
+
+	// Total amount of hugepage memory to be assigned to each test pod
+	hugePageAllocation = resource.MustParse("2Gi")
 )
 
 func init() {
@@ -1117,7 +1120,7 @@ sleep INF
 
 func createDPDKWorkload(nodeSelector map[string]string, command string, isServer bool, additionalCapabilities []corev1.Capability, mac string) (*corev1.Pod, error) {
 	resources := map[corev1.ResourceName]resource.Quantity{
-		corev1.ResourceName(fmt.Sprintf("hugepages-%v", hugePageSize)): resource.MustParse("2Gi"),
+		corev1.ResourceName(fmt.Sprintf("hugepages-%v", hugePageSize)): hugePageAllocation,
 		corev1.ResourceMemory: resource.MustParse("1Gi"),
 		corev1.ResourceCPU:    resource.MustParse("4"),
 	}

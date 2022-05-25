@@ -855,9 +855,15 @@ func validatePerformanceProfile(performanceProfile *performancev2.PerformancePro
 
 	foundHugePages := false
 	for _, page := range performanceProfile.Spec.HugePages.Pages {
-		countVerification := 5
-		// we need a minimum of 5 huge pages so if there is no Node in the performance profile we need 10 pages
-		// because the kernel will split the number in the performance policy equally to all the numa's
+		countVerification, err := hugePagesNeededPerNode()
+		if err != nil {
+			return false, err
+		}
+
+		// if there is no Node in the performance profile we
+		// need twice as many pages because the kernel will
+		// split the number in the performance policy equally
+		// to all the numa's
 		if page.Node == nil {
 			countVerification = countVerification * 2
 		}
@@ -866,7 +872,7 @@ func validatePerformanceProfile(performanceProfile *performancev2.PerformancePro
 			continue
 		}
 
-		if page.Count < int32(countVerification) {
+		if page.Count < countVerification {
 			continue
 		}
 
@@ -926,6 +932,12 @@ func CreatePerformanceProfile() error {
 	isolatedCPUSet := performancev2.CPUSet("8-15")
 	reservedCPUSet := performancev2.CPUSet("0-7")
 	hugepageSize := performancev2.HugePageSize(shortHugePageSize())
+	totalHugePages, err := hugePagesNeededPerNode()
+	if err != nil {
+		return err
+	}
+	// Double the number of pages needed, because they will be split across two nodes
+	totalHugePages = totalHugePages * 2
 	performanceProfile := &performancev2.PerformanceProfile{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: performanceProfileName,
@@ -939,7 +951,7 @@ func CreatePerformanceProfile() error {
 				DefaultHugePagesSize: &hugepageSize,
 				Pages: []performancev2.HugePage{
 					{
-						Count: 10,
+						Count: totalHugePages,
 						Size:  hugepageSize,
 					},
 				},
@@ -1593,4 +1605,24 @@ func getFreeHugepages(pod corev1.Pod, numaNode int) (int, error) {
 // resources.  Calculate that shortened form
 func shortHugePageSize() string {
 	return strings.TrimSuffix(hugePageSize.String(), "i")
+}
+
+func hugePagesNeededPerNode() (int32, error) {
+	hugePageBytes, ok := hugePageSize.AsInt64()
+	if !ok {
+		return 0, fmt.Errorf("Bad hugepage size\"%v\"", hugePageSize)
+	}
+	hugeAllocBytes, ok := hugePageAllocation.AsInt64()
+	if !ok {
+		return 0, fmt.Errorf("Bad hugepage allocation size \"%v\"", hugePageAllocation)
+	}
+	if hugeAllocBytes % hugePageBytes != 0 {
+		return 0, fmt.Errorf("Hugepage allocation %v is not a multiple of hugepage size %v", hugePageAllocation, hugePageSize)
+	}
+
+	hugepagesPerPod := hugeAllocBytes / hugePageBytes
+
+	// We run two pods at once, and allow some spare, so use 2.5x
+	// the per pod requirement per node
+	return int32(hugepagesPerPod * 5 / 2), nil
 }
